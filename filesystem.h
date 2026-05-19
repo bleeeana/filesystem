@@ -4,6 +4,8 @@
 #include <linux/types.h>
 #include <linux/magic.h>
 #include <linux/crc32.h> 
+#include <linux/list.h>
+#include <linux/spinlock.h> 
 
 #define MAGIC_NUMBER 0x12345678
 #define SECTOR_SIZE 512
@@ -16,6 +18,8 @@ struct filesystem_superblock {
     __le64 sectors_num;
     __le32 max_file_size;
     __le64 sb2_offset;
+    __le64 file_count;
+    __le32 max_name_len;
     __le32 checksum;
     __u8 reserve[468];
 } __attribute__((packed));
@@ -31,7 +35,9 @@ struct fs_file_meta {
 struct superblock_info {
     struct block_device *device;
     __u64 sb1_offset;          
-    __u64 sb2_offset;          
+    __u64 sb2_offset; 
+    __u64 total_sectors;
+    __u64 file_count;         
     __u32 max_file_sectors;    
     __u32 max_name_len;        
     struct list_head files;    
@@ -39,9 +45,9 @@ struct superblock_info {
     __u32 sb_checksum;
 };
 
-static inline struct fs_sb_info *FS_SB(struct super_block *sb)
+static inline struct superblock_info *FS_SB(struct super_block *sb)
 {
-    return (struct fs_sb_info *)sb->s_fs_info;
+    return (struct superblock_info *)sb->s_fs_info;
 }
 
-#endif
+#endif /* FILESYSTEM_H */
