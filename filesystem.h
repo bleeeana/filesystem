@@ -8,7 +8,7 @@
 #include <linux/spinlock.h> 
 
 #define MAGIC_NUMBER 0x12345678
-#define SECTOR_SIZE 512
+#define FS_SECTOR_SIZE 512
 #define MAX_FILES 1024
 #define MAX_NAME_LENGTH 64
 
