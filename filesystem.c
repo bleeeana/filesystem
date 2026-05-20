@@ -51,9 +51,6 @@ static const struct file_operations simplefs_file_fops;
 static const struct file_operations simplefs_root_fops;
 static const struct inode_operations simplefs_root_iops;
 
-/* ============================================================================
- * VFS OPERATIONS
- * ============================================================================ */
 
 static int simplefs_iterate_shared(struct file *file, struct dir_context *ctx)
 {
@@ -66,7 +63,6 @@ static int simplefs_iterate_shared(struct file *file, struct dir_context *ctx)
 
     if (!info) return -EINVAL;
 
-    /* Отдаём "." и "..", если ещё не отдавали */
     if (pos == 0) {
         if (!dir_emit(ctx, ".", 1, 1, DT_DIR)) return 0;
         ctx->pos = 1; pos = 1;
@@ -76,19 +72,17 @@ static int simplefs_iterate_shared(struct file *file, struct dir_context *ctx)
         ctx->pos = 2; pos = 2;
     }
 
-    /* Список файлов статичен после mount, спинлок не нужен.
-       Убираем его, чтобы dir_emit не блокировал поток. */
     list_for_each_entry(meta, &info->files, list) {
         if (ino <= pos) {
             ino++;
             continue;
         }
         if (!dir_emit(ctx, meta->name, strlen(meta->name), ino, DT_REG))
-            return 0; /* Буфер ls заполнен, вернёмся позже */
+            return 0; 
         
         ctx->pos = ino++;
     }
-    return 0; /* Обход завершён */
+    return 0;
 }
 
 static struct dentry *simplefs_lookup(struct inode *dir, struct dentry *dentry, unsigned int flags)
@@ -233,10 +227,6 @@ static const struct file_operations simplefs_root_fops = {
     .iterate_shared = simplefs_iterate_shared,
 };
 
-/* ============================================================================
- * CORE FS FUNCTIONS
- * ============================================================================ */
-
 static int fs_read_sector(struct super_block *sb, __u64 sector, void *buf)
 {
     struct buffer_head *bh = sb_bread(sb, sector);
@@ -273,7 +263,6 @@ static int fs_format_disk(struct super_block *sb, struct superblock_info *info)
     struct filesystem_superblock sb_disk = {0};
     __u64 usable_sectors = bdev_nr_sectors(info->device);
     
-    /* ЗАЩИТА ОТ ПЕРЕПОЛНЕНИЯ: проверяем размер устройства */
     if (usable_sectors < 1025) {
         pr_err("Device too small: %llu sectors\n", usable_sectors);
         return -ENOSPC;
@@ -331,7 +320,6 @@ static int fs_fill_super(struct super_block *sb, struct fs_context *fc)
     if (!info) return -ENOMEM;
     sb->s_fs_info = info;
 
-    /* ✅ ИСПРАВЛЕНО: Присваиваем device СРАЗУ, до любых операций с диском */
     info->device = sb->s_bdev;
     
     INIT_LIST_HEAD(&info->files);
@@ -357,7 +345,6 @@ static int fs_fill_super(struct super_block *sb, struct fs_context *fc)
         }
     }
 
-    /* Убрали повторное info->device = sb->s_bdev; отсюда */
     info->total_sectors = le64_to_cpu(sb_disk.sectors_num);
     info->file_count = le64_to_cpu(sb_disk.file_count);
     info->sb_checksum = le32_to_cpu(sb_disk.checksum);
@@ -484,5 +471,4 @@ module_exit(filesystem_exit);
 
 MODULE_LICENSE("GPL");              
 MODULE_AUTHOR("1304 Bobkov Vladislav");       
-MODULE_DESCRIPTION("Simple educational block-based filesystem");
 MODULE_VERSION("0.1");
