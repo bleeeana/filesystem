@@ -8,20 +8,24 @@
 #include <linux/spinlock.h> 
 
 #define MAGIC_NUMBER 0x12345678
+#define FS_VERSION 1
 #define FS_SECTOR_SIZE 512
-#define MAX_FILES 1024
-#define MAX_NAME_LENGTH 64
+#define FS_ROOT_INO 1
+#define FS_FIRST_FILE_INO 2
+#define FS_MAX_FILES 100000
+#define MAX_NAME_LENGTH 255
 
 struct filesystem_superblock {
     __le32 magic;
     __le32 version;
     __le64 sectors_num;
-    __le32 max_file_size;
+    __le64 sb1_offset;
     __le64 sb2_offset;
     __le64 file_count;
+    __le32 max_file_size;
     __le32 max_name_len;
     __le32 checksum;
-    __u8 reserve[468];
+    __u8 reserve[460];
 } __attribute__((packed));
 
 struct fs_file_meta {

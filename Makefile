@@ -1,18 +1,19 @@
-obj-m += filesystem.o
-
 KDIR ?= /lib/modules/$(shell uname -r)/build
-PWD := $(shell pwd)
+PWD := $(CURDIR)
 
 ccflags-y := -Wall -Wextra -DDEBUG
+obj-m += filesystem.o
 
-all:
+all: module userspace
+
+module:
 	$(MAKE) -C $(KDIR) M=$(PWD) modules
-
-clean:
-	$(MAKE) -C $(KDIR) M=$(PWD) clean
-	$(MAKE) -C userspace clean 2>/dev/null || true
 
 userspace:
 	$(MAKE) -C userspace
 
-.PHONY: all clean userspace
+clean:
+	$(MAKE) -C $(KDIR) M=$(PWD) clean
+	$(MAKE) -C userspace clean
+
+.PHONY: all module userspace clean

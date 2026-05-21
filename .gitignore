@@ -1,1 +1,11 @@
 .vscode
+.vagrant/
+
+*.o
+*.ko
+*.mod
+*.mod.c
+.*.cmd
+Module.symvers
+modules.order
+userspace/fsctl
