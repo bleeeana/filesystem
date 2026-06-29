@@ -147,6 +147,14 @@ sudo ./userspace/fsctl erase
 echo "ФС размечена на стирание (требует пересборки)"
 echo "IOCTL ERASE_FS выполнен"
 
+FILE_COUNT_AFTER=$(ls -1 /mnt 2>/dev/null | grep -c "^file_" || true)
+if [ "$FILE_COUNT_AFTER" -eq 0 ]; then
+    echo "Файлы больше не видны в каталоге"
+else
+    echo "ОШИБКА: после erase в каталоге осталось $FILE_COUNT_AFTER файлов"
+    exit 1
+fi
+
 echo ""
 echo "ЭТАП 8: Проверка целостности superblock..."
 echo "__________________________________________"
