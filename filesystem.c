@@ -153,7 +153,7 @@ static int fs_zero_all_files(struct super_block *sb, struct superblock_info *inf
     __u64 i;
     __u32 s;
     int ret;
-    if (&info->erased) return -EIO;
+    if (info->erased) return -EIO;
     for (i = 0; i < info->file_count; i++) {
         if (fatal_signal_pending(current))
             return -ERESTARTSYS;
@@ -581,6 +581,33 @@ static int fs_format(struct super_block *sb, struct superblock_info *info)
     return fs_write_superblocks(sb, info);
 }
 
+static bool fs_is_disk_empty(struct super_block *sb, struct superblock_info *info)
+{
+    char *buf;
+    int i;
+    bool empty = true;
+    const int sectors_to_check = 16;
+
+    buf = kmalloc(info->sector_size, GFP_KERNEL);
+    if (!buf)
+        return false;
+
+    for (i = 0; i < sectors_to_check && i < info->total_sectors; i++) {
+        int ret = fs_rw_sector(sb, i, buf, info->sector_size, false);
+        if (ret) {
+            empty = false;
+            break;
+        }
+        if (memchr_inv(buf, 0, info->sector_size) != NULL) {
+            empty = false;
+            break;
+        }
+    }
+
+    kfree(buf);
+    return empty;
+}
+
 static int fs_load_or_format(struct super_block *sb, struct superblock_info *info)
 {
     struct filesystem_superblock *disk;
@@ -608,7 +635,20 @@ static int fs_load_or_format(struct super_block *sb, struct superblock_info *inf
         ret = fs_check_names(info);
         goto out;
     }
-
+    if (fs_is_disk_empty(sb, info)) {
+        pr_info("empty system, formatting\n");
+        ret = fs_format(sb, info);
+        if (ret) {
+            pr_err("format failed\n");
+            goto out;
+        }
+        ret = fs_rw_sector(sb, info->sb1_offset, &disk[0], sizeof(*disk), false);
+        if (ret)
+            goto out;
+        fs_info_from_disk(info, &disk[0]);
+        ret = 0;
+        goto out;
+    }
     pr_err("superblock validation failed\n");
     ret = -EUCLEAN;
 out:
@@ -639,9 +679,6 @@ static int fs_fill_super(struct super_block *sb, struct fs_context *fc __maybe_u
     struct inode *root;
     int ret;
 
-    if (!sb_set_blocksize(sb, info->sector_size))
-        return -EINVAL;
-
     info = kzalloc(sizeof(*info), GFP_KERNEL);
     if (!info)
         return -ENOMEM;
@@ -660,8 +697,10 @@ static int fs_fill_super(struct super_block *sb, struct fs_context *fc __maybe_u
         goto fail;
     }
 
-    if (!sb_set_blocksize(sb, info->sector_size))
-        return -EINVAL;
+    if (!sb_set_blocksize(sb, info->sector_size)){
+        ret = -EINVAL;
+        goto fail;
+    }
     if (info->total_sectors <= 2 ||
         info->sb1_offset >= info->total_sectors ||
         info->sb2_offset >= info->total_sectors ||

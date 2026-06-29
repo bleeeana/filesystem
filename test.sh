@@ -87,7 +87,7 @@ for i in {0..4}; do
     if [ "$RESULT" = "$TEST_DATA" ]; then
         echo "file_$i: запись/чтение OK"
     else
-        echo "file_$i: ОШИБКА (написали '$TEST_DATA', прочитали '$RESULT')"
+        echo "file_$i: ОШИБКА"
         exit 1
     fi
 done
