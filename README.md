@@ -9,15 +9,18 @@ vagrant up
 vagrant ssh
 cd /vagrant
 make
+sudo chmod 777 ./test.sh
 sudo ./test.sh
 ```
 
 Vagrant использует `cloud-image/debian-13`; внутри проверено ядро
-`6.12.88+deb13-amd64`.
+`6.12.94+deb13-amd64`.
 
 ### Ручной запуск
 
 ```bash
+cd /vagrant
+sudo chmod 777 ./test.sh
 make
 sudo dd if=/dev/zero of=/tmp/virt.img bs=1M count=10
 DEV=$(sudo losetup --show -f /tmp/virt.img)

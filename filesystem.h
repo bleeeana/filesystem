@@ -9,7 +9,6 @@
 
 #define MAGIC_NUMBER 0x12345678
 #define FS_VERSION 1
-#define FS_SECTOR_SIZE 512
 #define FS_ROOT_INO 1
 #define FS_FIRST_FILE_INO 2
 #define FS_MAX_FILES 100000
@@ -43,10 +42,12 @@ struct superblock_info {
     __u64 total_sectors;
     __u64 file_count;         
     __u32 max_file_sectors;    
-    __u32 max_name_len;        
+    __u32 max_name_len; 
+    __u32 sector_size;       
     struct list_head files;    
-    spinlock_t lock;           
+    struct mutex lock;           
     __u32 sb_checksum;
+    bool erased;
 };
 
 static inline struct superblock_info *FS_SB(struct super_block *sb)

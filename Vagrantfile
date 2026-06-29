@@ -14,14 +14,13 @@ Vagrant.configure("2") do |config|
     set -eu
 
     apt-get update
-    apt-get install -y build-essential gcc make kmod util-linux gdb ca-certificates linux-headers-$(uname -r)
+    apt-get install -y build-essential gcc make kmod util-linux gdb ca-certificates linux-headers-amd64
 
     mkdir -p /mnt
     chmod 777 /mnt
-
-    echo "Kernel: $(uname -r)"
-    if ! uname -r | grep -q '^6\\.12\\.'; then
-      echo "WARNING: assignment expects kernel 6.12.x"
+    CURRENT_KERNEL=$(uname -r)
+    if [ ! -e "/lib/modules/$CURRENT_KERNEL/build" ]; then
+      reboot
     fi
   SHELL
 end

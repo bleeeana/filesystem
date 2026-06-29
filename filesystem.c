@@ -120,7 +120,7 @@ static int fs_rw_sector(struct super_block *sb, __u64 sector, void *buf,
         return -EIO;
 
     if (write) {
-        memset(bh->b_data, 0, FS_SECTOR_SIZE);
+        memset(bh->b_data, 0, FS_SB(sb)->sector_size);
         memcpy(bh->b_data, buf, len);
         mark_buffer_dirty(bh);
         sync_dirty_buffer(bh);
@@ -134,9 +134,17 @@ static int fs_rw_sector(struct super_block *sb, __u64 sector, void *buf,
 
 static int fs_zero_sector(struct super_block *sb, __u64 sector)
 {
-    char zero[FS_SECTOR_SIZE] = { 0 };
+    int ret;
+    char *zero;
 
-    return fs_rw_sector(sb, sector, zero, sizeof(zero), true);
+    zero = kzalloc(FS_SB(sb)->sector_size, GFP_KERNEL);
+    if (!zero)
+        return -ENOMEM;
+
+    ret = fs_rw_sector(sb, sector, zero, FS_SB(sb)->sector_size, true);
+
+    kfree(zero);
+    return ret;
 }
 
 static int fs_zero_all_files(struct super_block *sb, struct superblock_info *info)
@@ -145,7 +153,7 @@ static int fs_zero_all_files(struct super_block *sb, struct superblock_info *inf
     __u64 i;
     __u32 s;
     int ret;
-
+    if (&info->erased) return -EIO;
     for (i = 0; i < info->file_count; i++) {
         if (fatal_signal_pending(current))
             return -ERESTARTSYS;
@@ -165,20 +173,27 @@ static int fs_zero_all_files(struct super_block *sb, struct superblock_info *inf
 static int fs_hash_file(struct super_block *sb, const struct fs_file_layout *layout,
                         __u32 *hash_out)
 {
-    char data[FS_SECTOR_SIZE];
+    void *data;
     __u32 hash = ~0U;
     __u32 i;
     int ret;
 
+    data = kmalloc(FS_SB(sb)->sector_size, GFP_KERNEL);
+    if (!data)
+        return -ENOMEM;
+
     for (i = 0; i < layout->sectors; i++) {
-        ret = fs_rw_sector(sb, layout->first_sector + i, data, sizeof(data), false);
+        ret = fs_rw_sector(sb, layout->first_sector + i, data, FS_SB(sb)->sector_size, false);
         if (ret)
-            return ret;
-        hash = crc32(hash, data, sizeof(data));
+            goto out;
+        hash = crc32(hash, data, FS_SB(sb)->sector_size);
     }
 
     *hash_out = hash;
-    return 0;
+    ret = 0;
+    out:
+        kfree(data);
+        return ret;
 }
 
 static long fs_ioctl_hashes(struct super_block *sb, struct superblock_info *info,
@@ -186,7 +201,7 @@ static long fs_ioctl_hashes(struct super_block *sb, struct superblock_info *info
 {
     struct filesystem_hashes_request req;
     __u64 i;
-
+    if (info->erased) return -EIO;
     if (copy_from_user(&req, (void __user *)arg, sizeof(req)))
         return -EFAULT;
 
@@ -226,6 +241,7 @@ static long fs_ioctl_mapping(struct superblock_info *info, unsigned long arg)
     struct fs_file_layout layout;
     __u64 i;
     int ret;
+    if (info->erased) return -EIO;
 
     if (copy_from_user(&map, (void __user *)arg, sizeof(map)))
         return -EFAULT;
@@ -266,17 +282,29 @@ static long fs_unlocked_ioctl(struct file *file, unsigned int cmd, unsigned long
 
     switch (cmd) {
     case FS_IOCTL_ZERO_ALL:
-        return fs_zero_all_files(sb, info);
-    case FS_IOCTL_ERASE_FS:
+        mutex_lock(&info->lock);
         ret = fs_zero_all_files(sb, info);
-        if (ret)
-            return ret;
-        ret = fs_zero_sector(sb, info->sb1_offset);
-        return ret ? ret : fs_zero_sector(sb, info->sb2_offset);
+        mutex_unlock(&info->lock);
+        return ret;
+    case FS_IOCTL_ERASE_FS:
+        mutex_lock(&info->lock);
+
+        ret = fs_zero_all_files(sb, info);
+        if (!ret) ret = fs_rw_sector(sb, info->sb1_offset, NULL, 0, true);
+        if (!ret) ret = fs_rw_sector(sb, info->sb2_offset, NULL, 0, true);
+        if (!ret) info->erased = true;
+        mutex_unlock(&info->lock);
+        return ret;
     case FS_IOCTL_GET_HASHES:
-        return fs_ioctl_hashes(sb, info, arg);
+        mutex_lock(&info->lock);
+        ret = fs_ioctl_hashes(sb, info, arg);
+        mutex_unlock(&info->lock);
+        return ret;
     case FS_IOCTL_GET_MAPPING:
-        return fs_ioctl_mapping(info, arg);
+        mutex_lock(&info->lock);
+        ret = fs_ioctl_mapping(info, arg);
+        mutex_unlock(&info->lock);
+        return ret;
     default:
         return -ENOTTY;
     }
@@ -316,6 +344,7 @@ static int fs_iterate_shared(struct file *file, struct dir_context *ctx)
     struct superblock_info *info = FS_SB(file_inode(file)->i_sb);
     char name[FS_IOCTL_NAME_LEN];
     __u64 i;
+    if (info->erased) return 0;
 
     if (!dir_emit_dots(file, ctx))
         return 0;
@@ -340,10 +369,11 @@ static struct dentry *fs_lookup(struct inode *dir, struct dentry *dentry,
     if (dentry->d_name.len <= info->max_name_len &&
         fs_parse_name(dentry->d_name.name, &index) == 0 &&
         index < info->file_count &&
-        fs_file_layout(info, index, &layout) == 0) {
+        fs_file_layout(info, index, &layout) == 0 &&
+        !info->erased) {
         inode = fs_make_inode(dir->i_sb, S_IFREG | 0644,
                               FS_FIRST_FILE_INO + index,
-                              (loff_t)layout.sectors * FS_SECTOR_SIZE);
+                              (loff_t)layout.sectors * info->sector_size);
         if (!inode)
             return ERR_PTR(-ENOMEM);
     }
@@ -362,33 +392,49 @@ static ssize_t fs_transfer(struct kiocb *iocb, struct iov_iter *iter, bool write
     size_t done = 0;
     size_t count = iov_iter_count(iter);
     int ret;
-
+    mutex_lock(&info->lock);
+    if (info->erased) {
+        mutex_unlock(&info->lock);
+        return -EIO;
+    }
     ret = fs_file_layout(info, inode->i_ino - FS_FIRST_FILE_INO, &layout);
-    if (ret)
+    if (ret){
+        mutex_unlock(&info->lock);
         return ret;
-
-    size = (loff_t)layout.sectors * FS_SECTOR_SIZE;
-    if (pos < 0)
+    }
+    size = (loff_t)layout.sectors * info->sector_size;
+    if (pos < 0){
+        mutex_unlock(&info->lock);
         return -EINVAL;
-    if (pos >= size)
+    }
+    if (pos >= size) {
+        mutex_unlock(&info->lock);
         return write ? -ENOSPC : 0;
+    }
+       
     if (count > size - pos)
         count = size - pos;
 
     while (done < count) {
-        size_t off = pos % FS_SECTOR_SIZE;
-        size_t chunk = min_t(size_t, count - done, FS_SECTOR_SIZE - off);
+        size_t off = pos % info->sector_size;;
+        size_t chunk = min_t(size_t,
+                     min_t(size_t, count - done, info->sector_size),
+                     info->sector_size - off);
         struct buffer_head *bh = sb_bread(inode->i_sb,
-                                          layout.first_sector + pos / FS_SECTOR_SIZE);
+                                          layout.first_sector + pos / info->sector_size);
         size_t copied;
 
-        if (!bh)
+        if (!bh) {
+            mutex_unlock(&info->lock);
             return done ? done : -EIO;
+        }
+           
 
         copied = write ? copy_from_iter(bh->b_data + off, chunk, iter) :
                          copy_to_iter(bh->b_data + off, chunk, iter);
         if (copied != chunk) {
             brelse(bh);
+            mutex_unlock(&info->lock);
             return done ? done : -EFAULT;
         }
         if (write) {
@@ -409,6 +455,7 @@ static ssize_t fs_transfer(struct kiocb *iocb, struct iov_iter *iter, bool write
         inode_set_ctime_to_ts(inode, ts);
         mark_inode_dirty(inode);
     }
+    mutex_unlock(&info->lock);
     return done;
 }
 
@@ -441,9 +488,11 @@ static const struct file_operations fs_root_fops = {
 
 static __u32 fs_super_checksum(const struct filesystem_superblock *disk)
 {
-    struct filesystem_superblock tmp = *disk;
+    struct filesystem_superblock tmp = { 0 };
 
+    memcpy(&tmp, disk, sizeof(tmp));
     tmp.checksum = 0;
+
     return crc32(~0U, (u8 *)&tmp, sizeof(tmp));
 }
 
@@ -514,7 +563,6 @@ static int fs_write_superblocks(struct super_block *sb, struct superblock_info *
 
 static int fs_format(struct super_block *sb, struct superblock_info *info)
 {
-    __u64 sector;
     int ret;
 
     info->file_count = fs_file_count_for(info);
@@ -522,14 +570,14 @@ static int fs_format(struct super_block *sb, struct superblock_info *info)
     if (ret)
         return ret;
 
-    for (sector = 0; sector < info->total_sectors; sector++) {
-        if (sector == info->sb1_offset || sector == info->sb2_offset)
-            continue;
-        ret = fs_zero_sector(sb, sector);
-        if (ret)
-            return ret;
-        cond_resched();
-    }
+    ret = blkdev_issue_discard(sb->s_bdev, 0, info->total_sectors,
+                               GFP_KERNEL);
+    if (ret == -EOPNOTSUPP)
+        ret = blkdev_issue_zeroout(sb->s_bdev, 0, info->total_sectors,
+                                   GFP_KERNEL, 0);
+    if (ret)
+        return ret;
+
     return fs_write_superblocks(sb, info);
 }
 
@@ -551,19 +599,18 @@ static int fs_load_or_format(struct super_block *sb, struct superblock_info *inf
     if (!ret)
         ok[1] = fs_validate_super(&disk[1], info, info->sb2_offset) == 0;
 
-    if (ok[0] || ok[1]) {
-        fs_info_from_disk(info, ok[0] ? &disk[0] : &disk[1]);
+    if (ok[0] && ok[1]) {
+        fs_info_from_disk(info, &disk[0]);
         if (info->file_count != fs_file_count_for(info)) {
             ret = -EUCLEAN;
             goto out;
         }
         ret = fs_check_names(info);
-        if (!ret && (!ok[0] || !ok[1]))
-            ret = fs_write_superblocks(sb, info);
         goto out;
     }
 
-    ret = fs_format(sb, info);
+    pr_err("superblock validation failed\n");
+    ret = -EUCLEAN;
 out:
     kfree(disk);
     return ret;
@@ -574,7 +621,7 @@ static int fs_statfs(struct dentry *dentry, struct kstatfs *buf)
     struct superblock_info *info = FS_SB(dentry->d_sb);
 
     buf->f_type = MAGIC_NUMBER;
-    buf->f_bsize = FS_SECTOR_SIZE;
+    buf->f_bsize = info->sector_size;;
     buf->f_blocks = info->total_sectors;
     buf->f_files = info->file_count;
     buf->f_namelen = info->max_name_len;
@@ -592,7 +639,7 @@ static int fs_fill_super(struct super_block *sb, struct fs_context *fc __maybe_u
     struct inode *root;
     int ret;
 
-    if (!sb_set_blocksize(sb, FS_SECTOR_SIZE))
+    if (!sb_set_blocksize(sb, info->sector_size))
         return -EINVAL;
 
     info = kzalloc(sizeof(*info), GFP_KERNEL);
@@ -606,7 +653,15 @@ static int fs_fill_super(struct super_block *sb, struct fs_context *fc __maybe_u
     info->sb2_offset = sb2_offset;
     info->max_name_len = max_name_len;
     info->max_file_sectors = max_file_sectors;
+    info->sector_size = bdev_logical_block_size(sb->s_bdev);
+    if (!info->sector_size || info->sector_size < 512 ||
+        !is_power_of_2(info->sector_size)) {
+        ret = -EINVAL;
+        goto fail;
+    }
 
+    if (!sb_set_blocksize(sb, info->sector_size))
+        return -EINVAL;
     if (info->total_sectors <= 2 ||
         info->sb1_offset >= info->total_sectors ||
         info->sb2_offset >= info->total_sectors ||
@@ -626,7 +681,7 @@ static int fs_fill_super(struct super_block *sb, struct fs_context *fc __maybe_u
     sb->s_magic = MAGIC_NUMBER;
     sb->s_op = &fs_super_ops;
 
-    root = fs_make_inode(sb, S_IFDIR | 0755, FS_ROOT_INO, FS_SECTOR_SIZE);
+    root = fs_make_inode(sb, S_IFDIR | 0755, FS_ROOT_INO, info->sector_size);
     if (!root) {
         ret = -ENOMEM;
         goto fail;
