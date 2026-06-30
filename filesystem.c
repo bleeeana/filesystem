@@ -156,7 +156,7 @@ static int fs_zero_all_files(struct super_block *sb, struct superblock_info *inf
     if (info->erased) return -EIO;
     for (i = 0; i < info->file_count; i++) {
         if (fatal_signal_pending(current))
-            return -ERESTARTSYS;
+            return -EINTR;
         ret = fs_file_layout(info, i, &layout);
         if (ret)
             return ret;
